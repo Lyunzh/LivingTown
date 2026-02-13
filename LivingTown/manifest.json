@@ -1,0 +1,10 @@
+﻿{
+  "Name": "LivingTown",
+  "Author": "Lyunzh",
+  "Version": "1.0.0",
+  "Description": "<一句话简单描述你的模组是干什么的>", 
+  "UniqueID": "Lyunzh.LivingTown",
+  "EntryDll": "LivingTown.dll",
+  "MinimumApiVersion": "4.0.0",
+  "UpdateKeys": [] 
+}
