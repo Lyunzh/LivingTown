@@ -33,6 +33,30 @@
 - NPC 数据访问
 - 会话管理和错误恢复
 
+### 4. [smapi-network-multiplayer.md](./smapi-network-multiplayer.md) - 多人游戏与网络通信
+- 多人游戏状态检查
+- 模组消息传递
+- 分屏支持 (PerScreen)
+- NPC 状态同步
+- 社交图谱传播
+- 网络优化和调试
+
+### 5. [smapi-phone-mail-system.md](./smapi-phone-mail-system.md) - 手机与邮件系统
+- 程序化邮件发送
+- 动态邮件内容
+- 来电系统
+- 自定义手机UI框架
+- TownFeed应用实现
+- 条件性内容触发
+
+### 6. [smapi-reflection-advanced.md](./smapi-reflection-advanced.md) - 反射与高级技巧
+- 反射API基础
+- NPC日程操作
+- 高级事件处理
+- 线程安全模式
+- 性能优化
+- 调试和监控
+
 ## 快速参考
 
 ### 最常用的事件
@@ -71,7 +95,10 @@ if (npc == null) return;                 // NPC是否存在
 1. **新手入门**：从 `smapi-basics.md` 开始，了解基础概念
 2. **功能开发**：查看 `smapi-events.md` 选择合适的事件
 3. **NPC 集成**：参考 `smapi-npc-dialogue.md` 实现对话系统
-4. **遇到问题**：检查各文档的"常见陷阱"和"最佳实践"部分
+4. **多人游戏**：使用 `smapi-network-multiplayer.md` 实现联机功能
+5. **手机邮件**：参考 `smapi-phone-mail-system.md` 创建UI系统
+6. **高级功能**：查阅 `smapi-reflection-advanced.md` 了解反射和优化技巧
+7. **遇到问题**：检查各文档的"常见陷阱"和"最佳实践"部分
 
 ---
 

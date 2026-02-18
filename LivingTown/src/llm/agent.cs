@@ -7,17 +7,18 @@ namespace LivingTown.LLM;
 
 /// <summary>
 /// LLM Agent: manages LLM clients per session.
-/// When receiving a RequestLLM, creates a streaming response and emits
-/// a single StreamingResponse message carrying the live IAsyncEnumerable.
+/// Receives the mod directory path to locate .env.
 /// </summary>
 public class Agent : IAgent
 {
     private readonly IMonitor _monitor;
+    private readonly string _modDir;
     private readonly ConcurrentDictionary<Guid, ILLMClient> _clients = new();
 
-    public Agent(IMonitor monitor)
+    public Agent(IMonitor monitor, string modDir)
     {
         _monitor = monitor;
+        _modDir = modDir;
     }
 
     public Endpoint SessionComes(Session session)
@@ -25,11 +26,10 @@ public class Agent : IAgent
         var outChannel = Channel.CreateUnbounded<object>();
         var inChannel = Channel.CreateUnbounded<object>();
 
-        // Create client for this session
-        var client = new LLMClient(session, _monitor);
+        var client = new LLMClient(session, _monitor, _modDir);
         _clients[session.Id] = client;
+        _monitor.Log($"[LLMAgent] SessionComes: {session.NpcName} (ID: {session.Id})", LogLevel.Info);
 
-        // Background loop: read requests, create streaming responses
         _ = Task.Run(async () =>
         {
             try
@@ -39,21 +39,12 @@ public class Agent : IAgent
                     switch (msg)
                     {
                         case NpcMsg.RequestLLM request:
-                            // Create the stream from the LLM client
-                            var tokenStream = client.GenerateStreamingResponseAsync(
-                                request.Prompt, session.Token);
-
-                            // Emit ONE message carrying the live stream object
+                            _monitor.Log($"[LLMAgent] RequestLLM: \"{request.Prompt}\"", LogLevel.Debug);
+                            var tokenStream = client.GenerateStreamingResponseAsync(request.Prompt, session.Token);
                             await outChannel.Writer.WriteAsync(
-                                new LLMMsg.StreamingResponse(
-                                    request.NpcName,
-                                    request.DialogRound,
-                                    tokenStream),
-                                session.Token
-                            );
-                            _monitor.Log(
-                                $"[LLMAgent] StreamingResponse created for {request.NpcName}",
-                                LogLevel.Debug);
+                                new LLMMsg.StreamingResponse(request.NpcName, request.DialogRound, tokenStream),
+                                session.Token);
+                            _monitor.Log($"[LLMAgent] StreamingResponse emitted for {request.NpcName}", LogLevel.Debug);
                             break;
                     }
                 }
@@ -61,7 +52,7 @@ public class Agent : IAgent
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                _monitor.Log($"[LLMAgent] Session loop error: {ex}", LogLevel.Error);
+                _monitor.Log($"[LLMAgent] Error: {ex}", LogLevel.Error);
             }
             finally
             {
@@ -75,5 +66,6 @@ public class Agent : IAgent
     public void SessionGone(Session session)
     {
         _clients.TryRemove(session.Id, out _);
+        _monitor.Log($"[LLMAgent] SessionGone: {session.NpcName}", LogLevel.Info);
     }
 }

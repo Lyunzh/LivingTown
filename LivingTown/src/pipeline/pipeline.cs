@@ -105,27 +105,37 @@ public class Pipeline
     {
         var ct = session.Token;
 
+        // Persistent read tasks — reuse across iterations to avoid losing messages.
+        // Only create a new task when the previous one completed.
+        Task<object>? gameTask = null;
+        Task<object>? llmTask = null;
+        Task<object>? npcTask = null;
+
         while (!ct.IsCancellationRequested)
         {
-            var gameTask = endpoints.Game.Out.ReadAsync(ct).AsTask();
-            var llmTask = endpoints.LLM.Out.ReadAsync(ct).AsTask();
-            var npcTask = endpoints.Npc.Out.ReadAsync(ct).AsTask();
-            
+            // Create read tasks only if not already pending
+            gameTask ??= endpoints.Game.Out.ReadAsync(ct).AsTask();
+            llmTask ??= endpoints.LLM.Out.ReadAsync(ct).AsTask();
+            npcTask ??= endpoints.Npc.Out.ReadAsync(ct).AsTask();
+
             var completed = await Task.WhenAny(gameTask, llmTask, npcTask);
 
             if (completed == gameTask)
             {
                 var msg = await gameTask;
+                gameTask = null; // Reset so next iteration creates a new read
                 OnGameMessage(session, endpoints, msg);
             }
             else if (completed == llmTask)
             {
                 var msg = await llmTask;
+                llmTask = null;
                 OnLLMMessage(session, endpoints, msg);
             }
             else if (completed == npcTask)
             {
                 var msg = await npcTask;
+                npcTask = null;
                 OnNpcMessage(session, endpoints, msg);
             }
         }
