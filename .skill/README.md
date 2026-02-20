@@ -57,6 +57,14 @@
 - 性能优化
 - 调试和监控
 
+### 7. [openclaw-memory-system.md](./openclaw-memory-system.md) - OpenClaw 记忆系统架构
+- 双层记忆架构（Daily Notes + MEMORY.md）
+- SOUL.md 人格定义系统
+- 预压缩刷新机制
+- BM25 + Vector 混合检索
+- 压缩与提取算法
+- 心跳与记忆新鲜度管理
+
 ## 快速参考
 
 ### 最常用的事件
@@ -98,7 +106,8 @@ if (npc == null) return;                 // NPC是否存在
 4. **多人游戏**：使用 `smapi-network-multiplayer.md` 实现联机功能
 5. **手机邮件**：参考 `smapi-phone-mail-system.md` 创建UI系统
 6. **高级功能**：查阅 `smapi-reflection-advanced.md` 了解反射和优化技巧
-7. **遇到问题**：检查各文档的"常见陷阱"和"最佳实践"部分
+7. **记忆系统**：参考 `openclaw-memory-system.md` 设计NPC长期记忆架构
+8. **遇到问题**：检查各文档的"常见陷阱"和"最佳实践"部分
 
 ---
 

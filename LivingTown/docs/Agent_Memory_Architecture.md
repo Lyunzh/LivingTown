@@ -1,54 +1,60 @@
-结合 OpenClaw (原 ClawdBot) 的架构文档 以及 《星露谷物语》模组开发（PelicanNet） 的具体场景，我们可以将 OpenClaw 的内存管理机制（Memory Architecture）迁移并应用到您的 Mod 中。
-OpenClaw 的核心理念是 “系统工程而非单纯的 Prompt 工程”，它通过分层存储和定期压缩来解决“遗忘”问题。以下是将这套逻辑应用在您的 Mod 中的具体实践方案：
-1. 核心架构映射：从 OpenClaw 到 星露谷 Mod
-OpenClaw 使用 JSONL（流水账） + Markdown（长期记忆） 的双层结构。在您的 Mod 中，可以将其映射为：
-OpenClaw 组件
-功能描述
-星露谷 Mod 对应实现 (C# / SMAPI)
-JSONL Transcripts
-交易日志：记录每一句对话、每一个动作的流水账，用于短期上下文。
-内存中的 Event Buffer：定义一个 List<GameEvent>，记录当天发生的事件（如“送礼”、“对话”）。只存在于 RAM 中，不需要存盘。
-MEMORY.md
-语义持久化：经过提炼的、需要长期记住的事实（如“用户喜欢 Astro 框架”）。
-ModData / Custom JSON：利用 SMAPI 的 NPC.modData 存储关键标签（如 Key: "Hates_Pumpkin"），或在本地 data/memories.json 存储文本摘要。
-SOUL.md
-人设/灵魂：定义 Agent 的核心性格和边界，每次请求都会注入。
-Dynamic System Prompt：在调用 LLM 时，动态拼接 NPC 的基础设定（性格）+ 当前状态（已婚/离婚）+ 关系值。
-Pre-Compaction Flush
-预压缩刷新：当上下文快满时，触发“静默思考”，将重要信息写入文件，防止被遗忘。
-DayEnding Reflection：利用 GameLoop.DayEnding 事件，在玩家睡觉时，将当天的 Buffer 总结为长期记忆，存入 ModData。
---------------------------------------------------------------------------------
-2. 具体应用实践步骤
-第一步：构建“灵魂文件” (Implementation of SOUL.md)
-OpenClaw 强调 SOUL.md 是 Agent 的“宪法”。在 Mod 中，您不需要创建一个物理的 .md 文件，而是要在代码中为每个 NPC 构建一个动态的 Persona Builder。
-• 实践： 不要只写“你是海莉”，而要像 OpenClaw 一样定义边界。
-• 代码逻辑：
-第二步：短期记忆流与“通道队列” (Lane Queue Concept)
-OpenClaw 使用 Lane Queue（泳道队列） 来串行处理消息，防止并发混乱。在星露谷中，这意味着您需要一个事件监听器，将游戏事件转化为自然语言，放入当天的“待处理队列”。
-• 实践： 不要每一帧都记录。只记录 关键触发器 (Triggers)。
-• 记录内容：
-    ◦ Event: GiftGiven (玩家送了什么，NPC 反应如何)
-    ◦ Event: LocationChange (玩家是否闯入了 NPC 的私人房间)
-    ◦ Event: Gossip (NPC A 看到了玩家对 NPC B 做的事)
-第三步：模仿“预压缩刷新” (The Pre-Compaction Flush)
-这是 OpenClaw 最精髓的内存机制。它不是等 Context 爆了再删，而是 主动提取关键信息。 在星露谷 Mod 中，最佳的“刷新”时机是 每日结算（DayEnding）。
-• OpenClaw 逻辑： 触发静默思考 -> 提取 Fact -> 写入 MEMORY.md -> 清空上下文。
-• Mod 实践逻辑：
-    1. 触发： 玩家上床睡觉，黑屏结算时。
-    2. 提取： 将当天的 Event Buffer 发给 LLM（如："总结今天发生的事对 NPC 关系的影响"）。
-    3. 写入： LLM 返回："玩家今天送了垃圾给海莉，她非常生气。" -> 存入 Haley.modData["Memory_Day_24"] = "Resents player for trash gift".
-    4. 清空： 清空 Event Buffer，迎接新的一天。
-第四步：混合检索 (Hybrid Retrieval) 而非纯向量
-OpenClaw 放弃了纯向量搜索，采用了 BM25（关键词）+ 向量 的混合模式，因为向量搜索经常带回“语义相关但事实错误”的信息（Semantic Noise）。
-• Mod 中的简化实践： 您不需要部署向量数据库。利用 游戏状态（Game Context） 作为最高优先级的检索键。
-    ◦ 场景： 玩家走进皮埃尔商店。
-    ◦ 检索逻辑：
-        1. 硬规则 (High Priority)： 检查 Pierre.modData 中是否有 Has_Lowered_Prices（降价标记）。
-        2. 关键词匹配 (Medium Priority)： 检查近期记忆中是否有 "Blueberry"（如果玩家刚卖了大量蓝莓）。
-        3. LLM 生成： 将上述检索到的 1-2 条关键记忆放入 Prompt。
-3. 总结：为什么这比 RAG 更好？
-模仿 OpenClaw 的架构比盲目使用 RAG VectorDB 更适合星露谷 Mod：
-1. 本地优先 (Local-First)：OpenClaw 强调数据存在本地文件。这与 SMAPI 的存档机制完美契合。
-2. 主动遗忘 (Active Forgetting)：通过“每日结算”机制，您不需要维护无限增长的数据库，只需要维护 当天的详细流水账 和 过往的摘要标签。
-3. 确定性 (Determinism)：OpenClaw 使用 "Tools" (工具) 来执行实际操作。在 Mod 中，这意味着 AI 不直接修改游戏内存，而是输出指令（如 Action: Post_Social_Media），由您的 C# 代码去执行，保证了游戏的稳定性。
-一句话总结： 不要试图让 NPC 记住所有事情（VectorDB 模式），而是建立一套 “每日日记 + 关键标签” 系统（OpenClaw 模式），利用玩家睡觉的时间进行记忆的“压缩与归档”。
+# PelicanNet 记忆体系：脱离 Vector DB 的本地化防渗漏架构
+
+结合 OpenClaw (原 ClawdBot) 的架构理念，我们将为《星露谷物语》模组建立一套**极度轻量化、避免使用任何本地向量数据库 (Vector DB)** 的反记忆遗忘机制。
+
+OpenClaw 的核心理念是**“系统工程而非单纯的 Prompt 工程”**。在不依赖外部重量级检索组件的前提下，以下是将这套逻辑应用在您的 Mod 中的具体实践方案：
+
+## 1. 核心架构映射：轻量化的双层结构
+
+| 逻辑组件 | 功能描述 | 星露谷 C# / SMAPI 实现 |
+| :--- | :--- | :--- |
+| **短期缓存 (Event Buffer)** | **交易日志：** 记录当天的临时动作，防止 LLM 在同一天内装失忆。 | **内存队列：** 定义一个 `List<GameEvent>`。玩家每天睡觉时清空，纯 RAM 存储。 |
+| **长期记忆 (ModData Storage)** | **语义持久化：** 经过提炼的核心事实。**绝对不允许无脑塞原文本**。 | **字典存储：** 利用 SMAPI 的 `NPC.modData` 存储 JSON 格式的 KV 键值对（如 `"Memory_TrashGift": "Hates player for gifting trash on Spring 12"`）。 |
+| **基础人设 (Persona Prompt)** | **灵魂/宪法：** 定义 Agent 的绝对性格与底线。 | **系统提示词：** 每次发给大模型的静态头部 (System Prompt)，享受大模型的 Context Caching 优惠。 |
+
+---
+
+## 2. 核心痛点解决：防内存溢出的滑动窗口
+
+如果放任 NPC 每天睡觉时都在积累新记忆，到了游戏第三年，LLM 的上下文窗口必定会被撑爆。因此，必须引入**记忆衰减（Memory Decay）**与**截断策略**。
+
+### 步骤 A：带有权重分数的记忆单元
+每次通过 `DayEnding` 夜间总结让 LLM 凝练记忆时，要求 LLM 输出一个**重要度评分 (1-10)**，并带上时间戳：
+```json
+{
+  "Timestamp": "Y1_Spring_15",
+  "Fact": "The player missed my birthday.",
+  "Importance": 7
+}
+```
+
+### 步骤 B：组装查询时的“滑动窗口 (Sliding Window)”
+当拼装发给 LLM 的 Prompt 时，执行以下防溢出排序：
+1. **绝对核心 (Importance >= 9)**：如“玩家与我结婚”、“玩家与我离婚”。这一类打上 `[PERMANENT]` 标签，**永远不被清除，永远强制注入 Prompt**。
+2. **常规记忆 (Importance 4-8)**：根据时间错配算法 $ Score = Importance - (CurrentDay - MemoryDay) \times 0.1 $ 重新计算分数。如果分数跌破阈值，视为自然遗忘，从 `ModData` 中默默擦除。
+3. **容量截断**：即使按上述公式排序后，只取 Top N 条（例如最多取 10 条事件）注入当前 Prompt，从物理层面掐断 Token 溢出的可能。
+
+---
+
+## 3. 具体应用实践步骤
+
+### 第一步：短期记忆流的触发器采集
+不要每一帧都记录，利用 C# 的 `EventWatcher` 只记录**关键触发器 (Triggers)**。
+- 玩家送礼。
+- 玩家触发了特定的过场动画。
+- 玩家闯入了卧室。
+
+### 第二步：“预压缩刷新” (The Pre-Compaction Flush)
+游戏触发 `DayEnding` (玩家睡觉黑屏) 时，开始**内存结账**。
+- **提取**：将当天的 `List<GameEvent>` 序列化后打包发给 LLM。
+- **归纳**：Prompt：“总结今天发生的事，如果无事发生就返回空数组；如果有值得记住的，以 JSON 格式返回事实和重要度(1-10)”。
+- **写入**：反序列化 LLM 的 JSON，追加到 `NPC.modData["AgentMemories"]` 字典中。
+- **清空**：清空 C# 内存里的 `List<GameEvent>`，迎接新的一天。
+
+### 第三步：基于标签与上下文的纯文本检索 (Lexical Retrieval)
+抛弃复杂的 Vector Embedding 和语义检索。NPC 的大脑不应该是一座广袤的图书馆，而应该是一个贴满便签的记事本。
+- **场景触发与标签匹配**：
+  当玩家进入“皮埃尔商店”时，系统读取玩家身上的隐性状态（例如 `Inventory` 里携带了大量蓝莓），C# 代码使用 LINQ 扫一遍皮埃尔的近期记忆库，通过纯文本匹配（`.Contains("Blueberry")` 或 `.Contains("PriceDrop")`）直接提取这几条特定记忆发给提示词组装器。
+- **优势**：没有大模型调用延迟，不需要第三方数据库进程。检索成本为零。
+
+**一句话总结**：不要妄图通过 Vector DB 全盘模拟人的记忆宇宙；用“权重衰减 + 每日结算 + C#字符串匹配”的**便签簿模型**，才是算力与智力的最优解。
