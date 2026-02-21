@@ -173,6 +173,5 @@ See `docs/` folder:
 
 ## Dependencies
 
-- `Microsoft.Extensions.AI.OpenAI` (10.3.0): OpenAI-compatible LLM client
 - `Newtonsoft.Json` (13.0.4): JSON serialization
 - `Pathoschild.Stardew.ModBuildConfig` (4.4.0): SMAPI build configuration
