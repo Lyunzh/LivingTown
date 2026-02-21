@@ -24,7 +24,7 @@ public static class GameTools
     ///
     /// This is the key linkage: Agent → Tool("set_goal") → Blackboard → GOAPPlanner → NPC Actions.
     /// </summary>
-    public static ToolDefinition SetGoal(IMonitor monitor)
+    public static ToolDefinition SetGoal(IMonitor monitor, GOAP.Blackboard? blackboard = null)
     {
         return new ToolDefinition
         {
@@ -35,7 +35,7 @@ public static class GameTools
             Parameters = new List<ToolParameter>
             {
                 new() { Name = "goal_name", Type = "string",
-                    Description = "The goal state to achieve (e.g., 'IsHungry=false', 'VisitLocation=Saloon', 'TalkTo=Sam').",
+                    Description = "The goal state to achieve (e.g., 'IsHungry=false', 'CurrentLocation=Saloon', 'Mood=Calm').",
                     Required = true },
                 new() { Name = "priority", Type = "string",
                     Description = "Priority level: 'low', 'medium', or 'high'. High priority goals interrupt current behavior.",
@@ -52,12 +52,43 @@ public static class GameTools
 
                 monitor.Log($"[GameTools] set_goal: {goalName} (priority={priority}, reason={reason})", LogLevel.Info);
 
-                // TODO: Write to GOAP Blackboard when implemented
-                // For now, return confirmation so the Agent knows the goal was accepted
-                return Task.FromResult($"Goal '{goalName}' has been set with {priority} priority. " +
-                                       "The NPC will begin working toward this goal.");
+                // Parse "Key=Value" format
+                var parts = goalName.Split('=', 2);
+                var goalKey = parts[0].Trim();
+                object goalValue = parts.Length > 1 ? ParseGoalValue(parts[1].Trim()) : true;
+
+                var goalPriority = priority.ToLower() switch
+                {
+                    "high" => GOAP.GoalPriority.High,
+                    "low" => GOAP.GoalPriority.Low,
+                    _ => GOAP.GoalPriority.Medium
+                };
+
+                // Write to Blackboard if available
+                if (blackboard != null)
+                {
+                    blackboard.EnqueueGoal(new GOAP.Goal
+                    {
+                        NpcName = "__CURRENT_NPC__",
+                        GoalKey = goalKey,
+                        GoalValue = goalValue,
+                        Priority = goalPriority,
+                        Reason = reason
+                    });
+                }
+
+                return Task.FromResult($"Goal '{goalKey}={goalValue}' has been set with {priority} priority. " +
+                                       "The GOAP planner will resolve this into an action sequence.");
             }
         };
+    }
+
+    /// <summary>Parse a goal value: "false" → bool false, "Saloon" → string, "3" → int.</summary>
+    private static object ParseGoalValue(string s)
+    {
+        if (bool.TryParse(s, out var b)) return b;
+        if (int.TryParse(s, out var i)) return i;
+        return s;
     }
 
     /// <summary>
