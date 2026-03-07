@@ -1,0 +1,30 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\LivingTown\src\state\TrackerStateModels.cs" Link="TrackerStateModels.cs" />
+    <Compile Include="..\LivingTown\src\state\GameStateTracker.cs" Link="GameStateTracker.cs" />
+    <Compile Include="..\LivingTown\src\state\MemoryManager.cs" Link="MemoryManager.cs" />
+    <Compile Include="..\LivingTown\src\state\HeuristicWatchdog.cs" Link="HeuristicWatchdog.cs" />
+    <Compile Include="..\LivingTown\src\llm\core\ToolRegistry.cs" Link="ToolRegistry.cs" />
+    <Compile Include="..\LivingTown\src\llm\core\ChatMessage.cs" Link="ChatMessage.cs" />
+    <Compile Include="..\LivingTown\src\llm\core\GameTools.cs" Link="GameTools.cs" />
+    <Compile Include="..\LivingTown\src\goap\Blackboard.cs" Link="Blackboard.cs" />
+    <Compile Include="..\LivingTown\src\goap\GOAPAction.cs" Link="GOAPAction.cs" />
+    <Compile Include="..\LivingTown\src\goap\GoapActionExecutor.cs" Link="GoapActionExecutor.cs" />
+    <Compile Include="TestStubs.cs" />
+    <Compile Include="Program.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>..\LivingTown\bin\Debug\net6.0\Newtonsoft.Json.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+</Project>

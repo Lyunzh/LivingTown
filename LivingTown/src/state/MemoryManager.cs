@@ -1,76 +1,69 @@
+﻿using Newtonsoft.Json;
 using StardewModdingAPI;
-using StardewValley;
-using Newtonsoft.Json;
 
 namespace LivingTown.State;
 
 /// <summary>
-/// Manages NPC conversation memory using a dual-layer approach:
-///   - Short-term: In-RAM event buffer (List of recent events)
-///   - Long-term: NPC.modData persistent storage (survives save/load)
-///
-/// Memory compaction (summarization via LLM) is triggered lazily:
-///   - Only when event buffer exceeds MaxEventBuffer
-///   - Or explicitly via DayEnding nightly batch
-///
-/// This is the L2 memory component. Reading is synchronous (main-thread safe).
-/// Writing long-term and compaction are async (run on background threads).
+/// Manages NPC memory using a pragmatic dual-layer model:
+/// - short-term in-memory event buffers for today's interactions;
+/// - long-term persisted summaries with nightly compaction and decay.
 /// </summary>
 public class MemoryManager
 {
-    private readonly IMonitor _monitor;
-    private const string ModDataPrefix = "LivingTown.Memory.";
+    private readonly IMonitor? _monitor;
+    private readonly string? _storagePath;
+    private readonly Func<MemoryContext> _contextProvider;
+
     private const int MaxEventBuffer = 10;
-
-    /// <summary>Per-NPC short-term event buffers (RAM only, reset on game restart).</summary>
+    private const int MaxPromptLongTermMemories = 8;
     private readonly Dictionary<string, List<MemoryEvent>> _eventBuffers = new();
+    private readonly Dictionary<string, List<LongTermMemory>> _longTermMemories;
 
-    public MemoryManager(IMonitor monitor)
+    public MemoryManager(IMonitor? monitor = null, string? storagePath = null, Func<MemoryContext>? contextProvider = null)
     {
         _monitor = monitor;
+        _storagePath = storagePath;
+        _contextProvider = contextProvider ?? (() => new MemoryContext(0, "Unknown", 0));
+        _longTermMemories = LoadSnapshot(storagePath);
     }
 
-    /// <summary>
-    /// Record a new event in the short-term buffer.
-    /// If buffer exceeds capacity, the oldest event is dropped (hard truncation).
-    /// </summary>
     public void RecordEvent(string npcName, string description, int importance = 5)
     {
+        var context = _contextProvider();
         var buffer = GetOrCreateBuffer(npcName);
         buffer.Add(new MemoryEvent
         {
             Description = description,
-            Importance = importance,
-            GameDay = Game1.Date.TotalDays,
-            Season = Game1.currentSeason,
-            DayOfMonth = Game1.dayOfMonth
+            Importance = Math.Clamp(importance, 1, 10),
+            GameDay = context.GameDay,
+            Season = context.Season,
+            DayOfMonth = context.DayOfMonth,
+            Keywords = ExtractKeywords(description)
         });
 
-        // Hard truncation: drop lowest-importance events when over capacity
         if (buffer.Count > MaxEventBuffer)
         {
             buffer.Sort((a, b) => a.Importance.CompareTo(b.Importance));
-            buffer.RemoveAt(0); // Remove the least important
-            _monitor.Log($"[Memory] {npcName}: buffer overflow, truncated least important event.", LogLevel.Debug);
+            buffer.RemoveAt(0);
+            Log($"[Memory] {npcName}: buffer overflow, truncated least important event.", LogLevel.Debug);
         }
 
-        _monitor.Log($"[Memory] {npcName}: recorded event (importance={importance}, buffer={buffer.Count}/{MaxEventBuffer})", LogLevel.Debug);
+        Log($"[Memory] {npcName}: recorded event (importance={importance}, buffer={buffer.Count}/{MaxEventBuffer})", LogLevel.Debug);
     }
 
-    /// <summary>
-    /// Get a formatted string of recent memories for prompt injection.
-    /// Combines short-term buffer with any long-term modData summaries.
-    /// </summary>
-    public string GetMemoriesForPrompt(string npcName)
+    public string GetMemoriesForPrompt(string npcName, string? query = null)
     {
+        var context = _contextProvider();
         var parts = new List<string>();
 
-        // Long-term memories from modData
-        var longTerm = GetLongTermMemory(npcName);
-        if (!string.IsNullOrEmpty(longTerm))
-            parts.Add($"[Long-term memories]\n{longTerm}");
+        var longTerm = GetRelevantLongTermMemories(npcName, context.GameDay, query, MaxPromptLongTermMemories);
+        if (longTerm.Count > 0)
+        {
+            var lines = longTerm.Select(memory =>
+                $"- (importance={memory.Importance}, score={GetScore(memory, context.GameDay):0.0}) {memory.Fact}");
+            parts.Add($"[Long-term memories]\n{string.Join("\n", lines)}");
+        }
 
-        // Short-term buffer
         var buffer = GetOrCreateBuffer(npcName);
         if (buffer.Count > 0)
         {
@@ -84,44 +77,106 @@ public class MemoryManager
         return parts.Count > 0 ? string.Join("\n\n", parts) : "No memories recorded yet.";
     }
 
-    /// <summary>
-    /// Save a compacted summary to NPC's modData for long-term persistence.
-    /// Usually called after LLM-based compaction during DayEnding.
-    /// </summary>
-    public void SaveLongTermMemory(string npcName, string summary)
+    public IReadOnlyList<LongTermMemory> GetRelevantLongTermMemories(string npcName, int currentDay, string? query = null, int maxCount = 8)
     {
-        var npc = Game1.getCharacterFromName(npcName);
-        if (npc == null)
+        if (!_longTermMemories.TryGetValue(npcName, out var memories))
+            return Array.Empty<LongTermMemory>();
+
+        var queryKeywords = ExtractKeywords(query ?? string.Empty);
+        return memories
+            .Select(memory => new { Memory = memory, Score = GetScore(memory, currentDay) + GetQueryBoost(memory, queryKeywords) })
+            .Where(x => x.Score >= 2f || x.Memory.Permanent)
+            .OrderByDescending(x => x.Score)
+            .ThenByDescending(x => x.Memory.Importance)
+            .Take(maxCount)
+            .Select(x => x.Memory)
+            .ToList();
+    }
+
+    public void RunNightlyMaintenance(int currentDay)
+    {
+        foreach (var npcName in _eventBuffers.Keys.ToList())
         {
-            _monitor.Log($"[Memory] Cannot save long-term memory: NPC '{npcName}' not found.", LogLevel.Warn);
-            return;
+            CompactNpcMemories(npcName);
         }
 
-        var key = $"{ModDataPrefix}{npcName}.Summary";
-        npc.modData[key] = summary;
-        _monitor.Log($"[Memory] Saved long-term memory for {npcName} ({summary.Length} chars).", LogLevel.Info);
+        DecayLongTermMemories(currentDay);
+        SaveSnapshot();
+        Log("[Memory] Nightly maintenance complete.", LogLevel.Debug);
     }
 
-    /// <summary>Retrieve long-term memory summary from NPC modData.</summary>
-    public string? GetLongTermMemory(string npcName)
+    public IReadOnlyList<LongTermMemory> GetAllLongTermMemories(string npcName)
     {
-        var npc = Game1.getCharacterFromName(npcName);
-        var key = $"{ModDataPrefix}{npcName}.Summary";
-        return npc?.modData.TryGetValue(key, out var value) == true ? value : null;
+        return _longTermMemories.TryGetValue(npcName, out var memories)
+            ? memories.OrderByDescending(m => m.Importance).ToList()
+            : Array.Empty<LongTermMemory>();
     }
 
-    /// <summary>Get the current event buffer count for an NPC.</summary>
     public int GetBufferCount(string npcName) =>
         _eventBuffers.TryGetValue(npcName, out var buf) ? buf.Count : 0;
 
-    /// <summary>Check if an NPC's buffer is close to overflowing (triggers compaction hint).</summary>
     public bool ShouldCompact(string npcName) => GetBufferCount(npcName) >= MaxEventBuffer - 2;
 
-    /// <summary>Clear the short-term buffer after compaction.</summary>
     public void ClearBuffer(string npcName)
     {
         if (_eventBuffers.ContainsKey(npcName))
             _eventBuffers[npcName].Clear();
+    }
+
+    private void CompactNpcMemories(string npcName)
+    {
+        var buffer = GetOrCreateBuffer(npcName);
+        if (buffer.Count == 0)
+            return;
+
+        var target = GetOrCreateLongTerm(npcName);
+        foreach (var memoryEvent in buffer
+                     .OrderByDescending(e => e.Importance)
+                     .GroupBy(e => e.Description, StringComparer.OrdinalIgnoreCase)
+                     .Select(g => g.First()))
+        {
+            if (memoryEvent.Importance < 4)
+                continue;
+
+            var existing = target.FirstOrDefault(x => string.Equals(x.Fact, memoryEvent.Description, StringComparison.OrdinalIgnoreCase));
+            if (existing != null)
+            {
+                existing.Importance = Math.Max(existing.Importance, memoryEvent.Importance);
+                existing.LastReferencedDay = Math.Max(existing.LastReferencedDay, memoryEvent.GameDay);
+                existing.Keywords = existing.Keywords.Union(memoryEvent.Keywords, StringComparer.OrdinalIgnoreCase).ToList();
+                continue;
+            }
+
+            target.Add(new LongTermMemory
+            {
+                Fact = memoryEvent.Description,
+                Importance = memoryEvent.Importance,
+                GameDay = memoryEvent.GameDay,
+                DayOfMonth = memoryEvent.DayOfMonth,
+                Season = memoryEvent.Season,
+                Permanent = memoryEvent.Importance >= 9,
+                LastReferencedDay = memoryEvent.GameDay,
+                Keywords = memoryEvent.Keywords.ToList()
+            });
+        }
+
+        buffer.Clear();
+        Log($"[Memory] {npcName}: compacted nightly memories.", LogLevel.Debug);
+    }
+
+    private void DecayLongTermMemories(int currentDay)
+    {
+        foreach (var npcName in _longTermMemories.Keys.ToList())
+        {
+            var memories = _longTermMemories[npcName]
+                .Where(memory => memory.Permanent || GetScore(memory, currentDay) >= 2f)
+                .OrderByDescending(memory => GetScore(memory, currentDay))
+                .ThenByDescending(memory => memory.Importance)
+                .Take(20)
+                .ToList();
+
+            _longTermMemories[npcName] = memories;
+        }
     }
 
     private List<MemoryEvent> GetOrCreateBuffer(string npcName)
@@ -133,9 +188,89 @@ public class MemoryManager
         }
         return buffer;
     }
+
+    private List<LongTermMemory> GetOrCreateLongTerm(string npcName)
+    {
+        if (!_longTermMemories.TryGetValue(npcName, out var memories))
+        {
+            memories = new List<LongTermMemory>();
+            _longTermMemories[npcName] = memories;
+        }
+        return memories;
+    }
+
+    private Dictionary<string, List<LongTermMemory>> LoadSnapshot(string? storagePath)
+    {
+        if (string.IsNullOrWhiteSpace(storagePath) || !File.Exists(storagePath))
+            return new Dictionary<string, List<LongTermMemory>>();
+
+        try
+        {
+            var json = File.ReadAllText(storagePath);
+            return JsonConvert.DeserializeObject<Dictionary<string, List<LongTermMemory>>>(json)
+                   ?? new Dictionary<string, List<LongTermMemory>>();
+        }
+        catch (Exception ex)
+        {
+            Log($"[Memory] Failed to load snapshot: {ex.Message}", LogLevel.Warn);
+            return new Dictionary<string, List<LongTermMemory>>();
+        }
+    }
+
+    private void SaveSnapshot()
+    {
+        if (string.IsNullOrWhiteSpace(_storagePath))
+            return;
+
+        try
+        {
+            var directory = Path.GetDirectoryName(_storagePath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
+
+            File.WriteAllText(_storagePath, JsonConvert.SerializeObject(_longTermMemories, Formatting.Indented));
+        }
+        catch (Exception ex)
+        {
+            Log($"[Memory] Failed to save snapshot: {ex.Message}", LogLevel.Warn);
+        }
+    }
+
+    private static float GetScore(LongTermMemory memory, int currentDay)
+    {
+        if (memory.Permanent)
+            return memory.Importance + 100f;
+
+        return memory.Importance - Math.Max(0, currentDay - memory.GameDay) * 0.1f;
+    }
+
+    private static float GetQueryBoost(LongTermMemory memory, IReadOnlyCollection<string> queryKeywords)
+    {
+        if (queryKeywords.Count == 0)
+            return 0f;
+
+        var overlap = memory.Keywords.Intersect(queryKeywords, StringComparer.OrdinalIgnoreCase).Count();
+        return overlap * 2f;
+    }
+
+    private static List<string> ExtractKeywords(string text)
+    {
+        return text
+            .Split(new[] { ' ', ',', '.', ':', ';', '"', '\'', '?', '!', '(', ')', '[', ']' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(token => token.Trim())
+            .Where(token => token.Length >= 4)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private void Log(string message, LogLevel level)
+    {
+        _monitor?.Log(message, level);
+    }
 }
 
-/// <summary>A single memory event in the short-term buffer.</summary>
+public sealed record MemoryContext(int GameDay, string Season, int DayOfMonth);
+
 public class MemoryEvent
 {
     public string Description { get; set; } = "";
@@ -143,4 +278,17 @@ public class MemoryEvent
     public int GameDay { get; set; }
     public string Season { get; set; } = "";
     public int DayOfMonth { get; set; }
+    public List<string> Keywords { get; set; } = new();
+}
+
+public class LongTermMemory
+{
+    public string Fact { get; set; } = "";
+    public int Importance { get; set; }
+    public int GameDay { get; set; }
+    public string Season { get; set; } = "";
+    public int DayOfMonth { get; set; }
+    public bool Permanent { get; set; }
+    public int LastReferencedDay { get; set; }
+    public List<string> Keywords { get; set; } = new();
 }

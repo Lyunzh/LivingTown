@@ -1,11 +1,9 @@
-using Newtonsoft.Json.Linq;
+﻿using Newtonsoft.Json.Linq;
 using StardewModdingAPI;
+using System.Threading;
 
 namespace LivingTown.LLM.Core;
 
-/// <summary>
-/// Describes a tool's parameter in JSON Schema format for the LLM function-calling API.
-/// </summary>
 public class ToolParameter
 {
     public string Name { get; set; } = "";
@@ -14,24 +12,13 @@ public class ToolParameter
     public bool Required { get; set; } = true;
 }
 
-/// <summary>
-/// A registered tool definition and its execution delegate.
-/// </summary>
 public class ToolDefinition
 {
     public string Name { get; set; } = "";
     public string Description { get; set; } = "";
     public List<ToolParameter> Parameters { get; set; } = new();
-
-    /// <summary>
-    /// The async function to execute when the LLM calls this tool.
-    /// Input: parsed JSON arguments. Output: string result for the LLM's Observation.
-    /// </summary>
     public Func<JObject, CancellationToken, Task<string>> ExecuteAsync { get; set; } = null!;
 
-    /// <summary>
-    /// Serialize this tool definition into the OpenAI function-calling JSON schema.
-    /// </summary>
     public JObject ToApiSchema()
     {
         var properties = new JObject();
@@ -66,17 +53,12 @@ public class ToolDefinition
     }
 }
 
-/// <summary>
-/// Central registry for all tools available to agents.
-/// Supports parallel execution of multiple tool calls via Task.WhenAll + SemaphoreSlim.
-/// </summary>
 public class ToolRegistry
 {
     private readonly Dictionary<string, ToolDefinition> _tools = new();
     private readonly IMonitor _monitor;
-
-    /// <summary>Global concurrency limiter for external API calls (e.g., max 2 concurrent HTTP requests).</summary>
     private readonly SemaphoreSlim _concurrencyLimiter;
+    private readonly AsyncLocal<Dictionary<string, string>?> _executionContext = new();
 
     public ToolRegistry(IMonitor monitor, int maxConcurrency = 3)
     {
@@ -95,16 +77,23 @@ public class ToolRegistry
 
     public IReadOnlyList<ToolDefinition> GetAll() => _tools.Values.ToList();
 
-    /// <summary>
-    /// Generate the "tools" array for the LLM API request body.
-    /// </summary>
+    public string? GetContextValue(string key)
+    {
+        return _executionContext.Value != null && _executionContext.Value.TryGetValue(key, out var value)
+            ? value
+            : null;
+    }
+
+    public IDisposable BeginContextScope(Dictionary<string, string>? context)
+    {
+        var previous = _executionContext.Value;
+        _executionContext.Value = context != null ? new Dictionary<string, string>(context) : null;
+        return new Scope(() => _executionContext.Value = previous);
+    }
+
     public JArray ToApiToolsArray() =>
         new(_tools.Values.Select(t => t.ToApiSchema()));
 
-    /// <summary>
-    /// Execute multiple tool calls in parallel with concurrency limiting.
-    /// Returns a list of (toolCallId, result) pairs.
-    /// </summary>
     public async Task<List<(string ToolCallId, string Result)>> ExecuteToolCallsAsync(
         List<ToolCallInfo> toolCalls, CancellationToken ct)
     {
@@ -142,5 +131,12 @@ public class ToolRegistry
 
         var results = await Task.WhenAll(tasks);
         return results.ToList();
+    }
+
+    private sealed class Scope : IDisposable
+    {
+        private readonly Action _onDispose;
+        public Scope(Action onDispose) => _onDispose = onDispose;
+        public void Dispose() => _onDispose();
     }
 }

@@ -1,89 +1,56 @@
-using Newtonsoft.Json.Linq;
+﻿using Newtonsoft.Json.Linq;
 using StardewModdingAPI;
 
 namespace LivingTown.LLM.Core;
 
-/// <summary>
-/// Game-specific tools that bridge the ReACT Agent with Stardew Valley game mechanics.
-/// These tools allow the LLM to directly influence NPC behavior and game state.
-///
-/// Architecture relationship:
-///   Agent.Tool("set_goal") → writes Goal to GOAP Blackboard
-///   Agent.Tool("play_emote") → enqueues emote action to main-thread queue
-///   Agent.Tool("web_search") → async HTTP call to search API
-///
-/// The GOAP engine is a SEPARATE system that reads from the Blackboard.
-/// Tools are the BRIDGE: Agent decides WHAT to do, GOAP decides HOW to do it.
-/// </summary>
 public static class GameTools
 {
-    /// <summary>
-    /// Tool: Set a goal on the GOAP Blackboard for an NPC.
-    /// The LLM decides the high-level goal (e.g., "go buy salad"),
-    /// GOAP resolves the concrete action sequence (pathfind → walk → buy → eat).
-    ///
-    /// This is the key linkage: Agent → Tool("set_goal") → Blackboard → GOAPPlanner → NPC Actions.
-    /// </summary>
-    public static ToolDefinition SetGoal(IMonitor monitor, GOAP.Blackboard? blackboard = null)
+    public static ToolDefinition SetGoal(IMonitor monitor, ToolRegistry toolRegistry, GOAP.Blackboard? blackboard = null)
     {
         return new ToolDefinition
         {
             Name = "set_goal",
-            Description = "Set a behavioral goal for the NPC. The GOAP planner will figure out " +
-                          "a valid action sequence to achieve this goal. Use this when the NPC " +
-                          "should DO something physical in the game world (walk, eat, buy, visit).",
+            Description = "Set a behavioral goal for the NPC. The GOAP planner will figure out a valid action sequence to achieve this goal.",
             Parameters = new List<ToolParameter>
             {
-                new() { Name = "goal_name", Type = "string",
-                    Description = "The goal state to achieve (e.g., 'IsHungry=false', 'CurrentLocation=Saloon', 'Mood=Calm').",
-                    Required = true },
-                new() { Name = "priority", Type = "string",
-                    Description = "Priority level: 'low', 'medium', or 'high'. High priority goals interrupt current behavior.",
-                    Required = false },
-                new() { Name = "reason", Type = "string",
-                    Description = "Brief explanation of why this goal was chosen (for memory logging).",
-                    Required = false }
+                new() { Name = "goal_name", Type = "string", Description = "The goal state to achieve (e.g., 'IsHungry=false').", Required = true },
+                new() { Name = "priority", Type = "string", Description = "Priority level: low, medium, or high.", Required = false },
+                new() { Name = "reason", Type = "string", Description = "Brief explanation of why this goal was chosen.", Required = false }
             },
             ExecuteAsync = (args, ct) =>
             {
+                var npcName = toolRegistry.GetContextValue("NPC_NAME") ?? "UnknownNPC";
                 var goalName = args["goal_name"]?.ToString() ?? "";
                 var priority = args["priority"]?.ToString() ?? "medium";
                 var reason = args["reason"]?.ToString() ?? "";
 
-                monitor.Log($"[GameTools] set_goal: {goalName} (priority={priority}, reason={reason})", LogLevel.Info);
+                monitor.Log($"[GameTools] set_goal: {npcName} -> {goalName} (priority={priority}, reason={reason})", LogLevel.Info);
 
-                // Parse "Key=Value" format
                 var parts = goalName.Split('=', 2);
                 var goalKey = parts[0].Trim();
                 object goalValue = parts.Length > 1 ? ParseGoalValue(parts[1].Trim()) : true;
 
-                var goalPriority = priority.ToLower() switch
+                var goalPriority = priority.ToLowerInvariant() switch
                 {
                     "high" => GOAP.GoalPriority.High,
                     "low" => GOAP.GoalPriority.Low,
                     _ => GOAP.GoalPriority.Medium
                 };
 
-                // Write to Blackboard if available
-                if (blackboard != null)
+                blackboard?.EnqueueGoal(new GOAP.Goal
                 {
-                    blackboard.EnqueueGoal(new GOAP.Goal
-                    {
-                        NpcName = "__CURRENT_NPC__",
-                        GoalKey = goalKey,
-                        GoalValue = goalValue,
-                        Priority = goalPriority,
-                        Reason = reason
-                    });
-                }
+                    NpcName = npcName,
+                    GoalKey = goalKey,
+                    GoalValue = goalValue,
+                    Priority = goalPriority,
+                    Reason = reason
+                });
 
-                return Task.FromResult($"Goal '{goalKey}={goalValue}' has been set with {priority} priority. " +
-                                       "The GOAP planner will resolve this into an action sequence.");
+                return Task.FromResult($"Goal '{goalKey}={goalValue}' has been set for {npcName} with {priority} priority.");
             }
         };
     }
 
-    /// <summary>Parse a goal value: "false" → bool false, "Saloon" → string, "3" → int.</summary>
     private static object ParseGoalValue(string s)
     {
         if (bool.TryParse(s, out var b)) return b;
@@ -91,26 +58,20 @@ public static class GameTools
         return s;
     }
 
-    /// <summary>
-    /// Tool: Play an emote animation on the NPC.
-    /// Direct game action — no GOAP needed (immediate execution).
-    /// </summary>
-    public static ToolDefinition PlayEmote(IMonitor monitor, Action<string, int> enqueueEmote)
+    public static ToolDefinition PlayEmote(IMonitor monitor, ToolRegistry toolRegistry, Action<string, int> enqueueEmote)
     {
         return new ToolDefinition
         {
             Name = "play_emote",
-            Description = "Play an emote animation above the NPC's head. " +
-                          "Use this to express emotions non-verbally during conversation.",
+            Description = "Play an emote animation above the NPC's head.",
             Parameters = new List<ToolParameter>
             {
-                new() { Name = "emote", Type = "string",
-                    Description = "The emote to play: 'happy', 'sad', 'angry', 'love', 'surprised', 'thinking'.",
-                    Required = true }
+                new() { Name = "emote", Type = "string", Description = "happy, sad, angry, love, surprised, thinking.", Required = true }
             },
             ExecuteAsync = (args, ct) =>
             {
-                var emoteName = args["emote"]?.ToString()?.ToLower() ?? "happy";
+                var npcName = toolRegistry.GetContextValue("NPC_NAME") ?? "UnknownNPC";
+                var emoteName = args["emote"]?.ToString()?.ToLowerInvariant() ?? "happy";
                 var emoteId = emoteName switch
                 {
                     "happy" => 32,
@@ -122,78 +83,54 @@ public static class GameTools
                     _ => 32
                 };
 
-                monitor.Log($"[GameTools] play_emote: {emoteName} (id={emoteId})", LogLevel.Debug);
-                enqueueEmote("__CURRENT_NPC__", emoteId);
-                return Task.FromResult($"Played '{emoteName}' emote.");
+                monitor.Log($"[GameTools] play_emote: {npcName} -> {emoteName} (id={emoteId})", LogLevel.Debug);
+                enqueueEmote(npcName, emoteId);
+                return Task.FromResult($"Played '{emoteName}' emote for {npcName}.");
             }
         };
     }
 
-    /// <summary>
-    /// Tool: Search the web for information (async, non-blocking).
-    /// Used for "breaking the fourth wall" or enriching NPC knowledge.
-    ///
-    /// NOTE: In the live NpcChat mode, this tool is typically NOT available
-    /// (to avoid blocking dialogue). The Watchdog may queue a WebSearch
-    /// as a nightly background task instead.
-    /// For the PersonaBuilder mode, this is a core tool.
-    /// </summary>
     public static ToolDefinition WebSearch(IMonitor monitor)
     {
         return new ToolDefinition
         {
             Name = "web_search",
-            Description = "Search the web for information. Returns a text summary of search results. " +
-                          "Use this to look up facts, wiki pages, or real-world information.",
+            Description = "Search the web for information.",
             Parameters = new List<ToolParameter>
             {
-                new() { Name = "query", Type = "string",
-                    Description = "The search query to look up.",
-                    Required = true }
+                new() { Name = "query", Type = "string", Description = "The search query to look up.", Required = true }
             },
-            ExecuteAsync = async (args, ct) =>
+            ExecuteAsync = (args, ct) =>
             {
                 var query = args["query"]?.ToString() ?? "";
                 monitor.Log($"[GameTools] web_search: \"{query}\"", LogLevel.Info);
-
-                // TODO: Implement actual web search (e.g., SerpAPI, Bing Search API)
-                // For now, return a placeholder that signals the tool works
-                return $"[WebSearch stub] No results for: {query}. " +
-                       "Implement actual search API integration to enable this feature.";
+                return Task.FromResult($"[WebSearch stub] No results for: {query}.");
             }
         };
     }
 
-    /// <summary>
-    /// Tool: Store a fact in long-term memory.
-    /// Allows the agent to explicitly decide what's worth remembering.
-    /// </summary>
-    public static ToolDefinition RememberFact(IMonitor monitor, Action<string, string, int> recordMemory)
+    public static ToolDefinition RememberFact(IMonitor monitor, ToolRegistry toolRegistry, Action<string, string, int> recordMemory)
     {
         return new ToolDefinition
         {
             Name = "remember",
-            Description = "Store an important fact in long-term memory. " +
-                          "Use this when the player shares something the NPC should remember for future conversations.",
+            Description = "Store an important fact in long-term memory.",
             Parameters = new List<ToolParameter>
             {
-                new() { Name = "fact", Type = "string",
-                    Description = "The fact to remember (e.g., 'Player's favorite color is blue').",
-                    Required = true },
-                new() { Name = "importance", Type = "string",
-                    Description = "Importance level 1-10. 10 = never forget, 1 = minor detail.",
-                    Required = false }
+                new() { Name = "fact", Type = "string", Description = "The fact to remember.", Required = true },
+                new() { Name = "importance", Type = "string", Description = "Importance level 1-10.", Required = false }
             },
             ExecuteAsync = (args, ct) =>
             {
+                var npcName = toolRegistry.GetContextValue("NPC_NAME") ?? "UnknownNPC";
                 var fact = args["fact"]?.ToString() ?? "";
                 var importanceStr = args["importance"]?.ToString() ?? "5";
                 int.TryParse(importanceStr, out var importance);
                 importance = Math.Clamp(importance, 1, 10);
 
-                monitor.Log($"[GameTools] remember: \"{fact}\" (importance={importance})", LogLevel.Debug);
-                recordMemory("__CURRENT_NPC__", fact, importance);
-                return Task.FromResult($"Remembered: \"{fact}\" (importance={importance}/10)");
+                monitor.Log($"[GameTools] remember: {npcName} -> \"{fact}\" (importance={importance})", LogLevel.Debug);
+                recordMemory(npcName, fact, importance);
+                return Task.FromResult($"Remembered for {npcName}: \"{fact}\" (importance={importance}/10)");
             }
         };
     }

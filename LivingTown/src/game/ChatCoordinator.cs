@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Microsoft.Xna.Framework;
 using StardewModdingAPI;
 using StardewValley;
@@ -7,13 +7,6 @@ using LivingTown.State;
 
 namespace LivingTown.Game;
 
-/// <summary>
-/// The central coordinator for NPC chat interactions.
-/// Owns the full flow: Input → Watchdog → Cache/Agent → Display.
-///
-/// Extracted from ModEntry to keep the entry point thin.
-/// ModEntry only wires SMAPI events to this coordinator.
-/// </summary>
 public class ChatCoordinator
 {
     private readonly IMonitor _monitor;
@@ -23,11 +16,7 @@ public class ChatCoordinator
     private readonly HeuristicWatchdog _watchdog;
     private readonly LexicalCache _lexicalCache;
     private readonly MemoryManager _memoryManager;
-
-    /// <summary>Main-thread action queue. Background tasks enqueue, OnTick dequeues.</summary>
     private readonly ConcurrentQueue<Action> _mainThreadQueue = new();
-
-    /// <summary>Prevent double-fire: tracks in-flight LLM calls per NPC.</summary>
     private readonly ConcurrentDictionary<string, bool> _pendingLlmCalls = new();
 
     public ChatCoordinator(
@@ -48,30 +37,16 @@ public class ChatCoordinator
         _memoryManager = memoryManager;
     }
 
-    // =========================================================================
-    // Public API (called from ModEntry event handlers)
-    // =========================================================================
-
-    /// <summary>
-    /// Handle a player's chat message to an NPC.
-    /// This is the HEART of the system.
-    /// </summary>
     public void OnPlayerChat(string npcName, string message)
     {
         _monitor.Log($"[Chat] Player → {npcName}: \"{message}\"", LogLevel.Info);
-
-        // Show player message
         Game1.chatBox?.addMessage($"You: {message}", new Color(150, 220, 255));
 
-        // L0: Track state & memory
         _stateTracker.RecordDialogue(npcName, message);
-        _memoryManager.RecordEvent(npcName, $"Player said: \"{message}\"", importance: 3);
+        _memoryManager.RecordEvent(npcName, $"Player said: \"{message}\"", importance: message.Length > 30 ? 5 : 3);
 
-        // L1: Watchdog evaluation
-        var eventType = _watchdog.ClassifyDialogue(npcName, message);
-        var verdict = _watchdog.Evaluate(npcName, eventType);
-
-        if (verdict == EscalationVerdict.ShortCircuit)
+        var shouldEscalate = _watchdog.ShouldEscalateDialogue(npcName, message);
+        if (!shouldEscalate)
         {
             var cached = _lexicalCache.TryMatch(npcName, message);
             if (cached != null)
@@ -80,10 +55,13 @@ public class ChatCoordinator
                 DisplayNpcResponse(npcName, cached);
                 return;
             }
-            // No cache hit → fall through to LLM even at low entropy
+
+            var fallback = BuildHeuristicFallback(npcName, message);
+            DisplayNpcResponse(npcName, fallback);
+            _memoryManager.RecordEvent(npcName, $"I answered heuristically: \"{Truncate(fallback, 80)}\"", importance: 2);
+            return;
         }
 
-        // L3: Invoke ReACT Agent on background thread
         if (_pendingLlmCalls.TryAdd(npcName, true))
         {
             _ = Task.Run(async () =>
@@ -113,12 +91,14 @@ public class ChatCoordinator
         }
     }
 
-    /// <summary>Drain the main-thread action queue. Call from OnUpdateTicked.</summary>
     public void Tick()
     {
         while (_mainThreadQueue.TryDequeue(out var action))
         {
-            try { action(); }
+            try
+            {
+                action();
+            }
             catch (Exception ex)
             {
                 _monitor.Log($"[Chat] Tick action error: {ex.Message}", LogLevel.Error);
@@ -126,14 +106,10 @@ public class ChatCoordinator
         }
     }
 
-    // =========================================================================
-    // Private: LLM invocation and display
-    // =========================================================================
-
     private async Task<string> InvokeLlmAsync(string npcName, string playerMessage)
     {
         var soul = _soulLoader.GetSoulForPrompt(npcName);
-        var memories = _memoryManager.GetMemoriesForPrompt(npcName);
+        var memories = _memoryManager.GetMemoriesForPrompt(npcName, playerMessage);
         var gameState = _stateTracker.GetStateForPrompt(npcName);
 
         var context = new Dictionary<string, string>
@@ -158,9 +134,27 @@ public class ChatCoordinator
 
         _memoryManager.RecordEvent(npcName,
             $"I responded: \"{Truncate(result.FinalAnswer, 80)}\"",
-            importance: 2);
+            importance: 4);
 
         return result.FinalAnswer;
+    }
+
+    private string BuildHeuristicFallback(string npcName, string message)
+    {
+        var daily = _stateTracker.GetDailyState(npcName);
+        var persistent = _stateTracker.GetPersistentState(npcName);
+        var lower = message.Trim().ToLowerInvariant();
+
+        if (persistent.IsCreepedOut || persistent.SocialFatigue >= 15)
+            return "Can we slow down a little? We've talked a lot already.";
+
+        if (daily.DialoguesToday >= 4)
+            return "We've already been talking quite a bit today.";
+
+        if (lower.Contains("why") || lower.Contains("怎么") || lower.Contains("为什么"))
+            return "That's not a quick answer. Ask me again when I have a moment.";
+
+        return "Mm. I hear you.";
     }
 
     private void DisplayNpcResponse(string npcName, string text)
