@@ -2,6 +2,7 @@
 using LivingTown.GOAP;
 using LivingTown.LLM.Core;
 using LivingTown.State;
+using Microsoft.Xna.Framework;
 using StardewModdingAPI;
 using StardewModdingAPI.Events;
 using StardewValley;
@@ -39,6 +40,7 @@ public class ModEntry : Mod
         _actionExecutor = new GoapActionExecutor(
             _blackboard,
             Monitor,
+            TryMoveNpcToLocation,
             (npcName, emoteId) => Game1.getCharacterFromName(npcName)?.doEmote(emoteId),
             (npcName, thought) => Game1.getCharacterFromName(npcName)?.showTextAboveHead(thought, duration: 3000));
 
@@ -144,6 +146,33 @@ public class ModEntry : Mod
             _blackboard.SetNpcFact(npcName, "Mood", "Neutral");
     }
 
+    private void TryMoveNpcToLocation(string npcName, string logicalLocation)
+    {
+        var npc = Game1.getCharacterFromName(npcName);
+        if (npc == null)
+            return;
+
+        var target = ResolveTargetLocation(npc, logicalLocation);
+        if (target == null)
+            return;
+
+        Game1.warpCharacter(npc, target.Value.LocationName, target.Value.Tile);
+        Monitor.Log($"[GOAP] Warped {npcName} to {target.Value.LocationName} ({target.Value.Tile.X}, {target.Value.Tile.Y})", LogLevel.Info);
+    }
+
+    private static (string LocationName, Vector2 Tile)? ResolveTargetLocation(NPC npc, string logicalLocation)
+    {
+        return logicalLocation switch
+        {
+            "Saloon" => ("Saloon", new Vector2(20f, 12f)),
+            "Mountain" => ("Mountain", new Vector2(41f, 17f)),
+            "Beach" => ("Beach", new Vector2(36f, 10f)),
+            "Town" => ("Town", new Vector2(46f, 70f)),
+            "Home" when !string.IsNullOrWhiteSpace(npc.DefaultMap) => (npc.DefaultMap, npc.DefaultPosition / 64f),
+            _ => null
+        };
+    }
+
     private IEnumerable<ShippingRecord> ReadShippingBin()
     {
         var farm = Game1.getFarm();
@@ -183,4 +212,3 @@ public class ModEntry : Mod
         }));
     }
 }
-

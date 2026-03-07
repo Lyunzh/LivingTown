@@ -6,17 +6,20 @@ public sealed class GoapActionExecutor
 {
     private readonly IMonitor? _monitor;
     private readonly Blackboard _blackboard;
+    private readonly Action<string, string>? _moveNpcToLocation;
     private readonly Action<string, int>? _playEmote;
     private readonly Action<string, string>? _showThought;
 
     public GoapActionExecutor(
         Blackboard blackboard,
         IMonitor? monitor = null,
+        Action<string, string>? moveNpcToLocation = null,
         Action<string, int>? playEmote = null,
         Action<string, string>? showThought = null)
     {
         _blackboard = blackboard;
         _monitor = monitor;
+        _moveNpcToLocation = moveNpcToLocation;
         _playEmote = playEmote;
         _showThought = showThought;
     }
@@ -34,8 +37,10 @@ public sealed class GoapActionExecutor
 
         if (action.Name.StartsWith("WalkTo_", StringComparison.OrdinalIgnoreCase))
         {
+            var destination = action.Effects.GetValueOrDefault("CurrentLocation", "somewhere")?.ToString() ?? "somewhere";
+            _moveNpcToLocation?.Invoke(npcName, destination);
             _playEmote?.Invoke(npcName, 16);
-            _showThought?.Invoke(npcName, $"Heading to {action.Effects.GetValueOrDefault("CurrentLocation", "somewhere")}." );
+            _showThought?.Invoke(npcName, $"Heading to {destination}.");
         }
         else if (action.Name.Equals("Eat", StringComparison.OrdinalIgnoreCase))
         {

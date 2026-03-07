@@ -166,7 +166,7 @@ static class Program
                 Expect(verdict4 == EscalationVerdict.Escalate, "high cumulative entropy should escalate");
             });
 
-            Run(failures, "Game tools bind to current NPC context", async () =>
+            RunAsync(failures, "Game tools bind to current NPC context", async () =>
             {
                 var monitor = new NullMonitor();
                 var registry = new ToolRegistry(monitor);
@@ -210,7 +210,8 @@ static class Program
                 var monitor = new NullMonitor();
                 var blackboard = new Blackboard(monitor);
                 string? thought = null;
-                var executor = new GoapActionExecutor(blackboard, monitor, null, (npc, text) => thought = text);
+                string? movedTo = null;
+                var executor = new GoapActionExecutor(blackboard, monitor, (npc, location) => movedTo = location, null, (npc, text) => thought = text);
                 var action = new GOAPAction
                 {
                     Name = "Eat",
@@ -222,6 +223,14 @@ static class Program
                 Expect(Equals(blackboard.GetNpcFact("Shane", "IsHungry"), false), "executor should update blackboard effects");
                 Expect(Equals(blackboard.GetNpcFact("Shane", "HasFood"), false), "executor should apply all effects");
                 Expect(thought == "Finally. Food.", "executor should emit visible feedback for eat action");
+
+                var moveAction = new GOAPAction
+                {
+                    Name = "WalkTo_Saloon",
+                    Effects = { ["CurrentLocation"] = "Saloon" }
+                };
+                executor.ExecuteAction("Shane", moveAction);
+                Expect(movedTo == "Saloon", "walk action should invoke movement callback");
             });
         }
         finally
@@ -268,7 +277,7 @@ static class Program
         }
     }
 
-    static async Task Run(List<string> failures, string name, Func<Task> test)
+    static async Task RunAsync(List<string> failures, string name, Func<Task> test)
     {
         try
         {
