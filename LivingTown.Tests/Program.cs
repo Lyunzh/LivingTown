@@ -205,6 +205,19 @@ static class Program
                 Expect(emoteId == 8, "thinking emote should map to question bubble id");
             }).GetAwaiter().GetResult();
 
+            Run(failures, "GOAP command parser builds goal objects", () =>
+            {
+                var goal = GoapCommandParser.BuildGoal("Sebastian", "Mood=Calm", "high", "debug");
+                Expect(goal.NpcName == "Sebastian", "goal parser should keep npc name");
+                Expect(goal.GoalKey == "Mood", "goal parser should parse key");
+                Expect(Equals(goal.GoalValue, "Calm"), "goal parser should parse string value");
+                Expect(goal.Priority == GoalPriority.High, "goal parser should parse priority");
+                Expect(goal.Reason == "debug", "goal parser should keep reason");
+
+                var boolGoal = GoapCommandParser.BuildGoal("Shane", "IsHungry=false");
+                Expect(Equals(boolGoal.GoalValue, false), "goal parser should coerce bool values");
+            });
+
             Run(failures, "GOAP executor applies action effects to blackboard", () =>
             {
                 var monitor = new NullMonitor();
@@ -296,3 +309,4 @@ static class Program
             throw new InvalidOperationException(message);
     }
 }
+

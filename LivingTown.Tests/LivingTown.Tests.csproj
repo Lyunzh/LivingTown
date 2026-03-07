@@ -18,6 +18,7 @@
     <Compile Include="..\LivingTown\src\goap\Blackboard.cs" Link="Blackboard.cs" />
     <Compile Include="..\LivingTown\src\goap\GOAPAction.cs" Link="GOAPAction.cs" />
     <Compile Include="..\LivingTown\src\goap\GoapActionExecutor.cs" Link="GoapActionExecutor.cs" />
+    <Compile Include="..\LivingTown\src\goap\GoapCommandParser.cs" Link="GoapCommandParser.cs" />
     <Compile Include="TestStubs.cs" />
     <Compile Include="Program.cs" />
   </ItemGroup>

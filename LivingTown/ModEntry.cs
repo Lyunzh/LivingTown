@@ -19,6 +19,7 @@ public class ModEntry : Mod
     private Blackboard _blackboard = null!;
     private GOAPPlanner _planner = null!;
     private GoapActionExecutor _actionExecutor = null!;
+    private GoapDebugCommands _goapCommands = null!;
 
     public override void Entry(IModHelper helper)
     {
@@ -43,6 +44,7 @@ public class ModEntry : Mod
             TryMoveNpcToLocation,
             (npcName, emoteId) => Game1.getCharacterFromName(npcName)?.doEmote(emoteId),
             (npcName, thought) => Game1.getCharacterFromName(npcName)?.showTextAboveHead(thought, duration: 3000));
+        _goapCommands = new GoapDebugCommands(Monitor, _blackboard, _planner, _actionExecutor, SeedNpcPlanningState);
 
         var soulLoader = new SoulLoader(Monitor);
         soulLoader.LoadAll(Path.Combine(helper.DirectoryPath, "assets", "souls"));
@@ -54,6 +56,7 @@ public class ModEntry : Mod
             Monitor, agentFactory, soulLoader,
             _stateTracker, _watchdog, lexicalCache, _memoryManager);
 
+        _goapCommands.Register(helper);
         helper.Events.Input.ButtonPressed += OnButtonPressed;
         helper.Events.Player.InventoryChanged += OnInventoryChanged;
         helper.Events.GameLoop.UpdateTicked += OnUpdateTicked;
